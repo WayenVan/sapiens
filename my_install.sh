@@ -15,7 +15,8 @@ print_green() {
 pip_install_editable() {
 	print_green "Installing $1..."
 	cd "$1" || exit
-	pip install -e . -v
+	# pip install -e . -v
+	pip install . -v #avoid using editable mode for now
 	cd - || exit
 	print_green "Finished installing $1."
 }
