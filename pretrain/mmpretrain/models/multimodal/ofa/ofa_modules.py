@@ -16,15 +16,21 @@ from mmcv.cnn.bricks import DropPath
 from mmengine.model import BaseModule
 from mmengine.utils import digit_version
 from transformers.modeling_outputs import (
-    BaseModelOutputWithPastAndCrossAttentions, ModelOutput, Seq2SeqLMOutput)
-from transformers.modeling_utils import (GenerationConfig, GenerationMixin,
-                                         PretrainedConfig)
+    BaseModelOutputWithPastAndCrossAttentions,
+    ModelOutput,
+    Seq2SeqLMOutput,
+)
+from transformers.modeling_utils import (
+    GenerationConfig,
+    PretrainedConfig,
+)
+from transformers.generation.utils import GenerationMixin
 
 from mmpretrain.registry import MODELS
 from ...backbones.resnet import Bottleneck, ResNet
 
-if digit_version(torch.__version__) >= digit_version('1.10.0'):
-    torch_meshgrid = partial(torch.meshgrid, indexing='ij')
+if digit_version(torch.__version__) >= digit_version("1.10.0"):
+    torch_meshgrid = partial(torch.meshgrid, indexing="ij")
 else:
     torch_meshgrid = torch.meshgrid
 
@@ -35,14 +41,17 @@ def make_token_bucket_position(bucket_size, max_position=1024):
     relative_pos = context_pos - memory_pos
     sign = torch.sign(relative_pos)
     mid = bucket_size // 2
-    abs_pos = torch.where((relative_pos < mid) & (relative_pos > -mid),
-                          mid - 1, torch.abs(relative_pos))
-    log_pos = torch.ceil(
-        torch.log(abs_pos / mid) / math.log(
-            (max_position - 1) / mid) * (mid - 1)) + mid
+    abs_pos = torch.where(
+        (relative_pos < mid) & (relative_pos > -mid), mid - 1, torch.abs(relative_pos)
+    )
+    log_pos = (
+        torch.ceil(
+            torch.log(abs_pos / mid) / math.log((max_position - 1) / mid) * (mid - 1)
+        )
+        + mid
+    )
     log_pos = log_pos.int()
-    bucket_pos = torch.where(abs_pos.le(mid), relative_pos,
-                             log_pos * sign).long()
+    bucket_pos = torch.where(abs_pos.le(mid), relative_pos, log_pos * sign).long()
     return bucket_pos + bucket_size - 1
 
 
@@ -61,8 +70,8 @@ def make_image_bucket_position(bucket_size, num_relative_distance):
     relative_coords[:, :, 1] += bucket_size - 1
     relative_coords[:, :, 0] *= 2 * bucket_size - 1
     relative_position_index = torch.zeros(
-        size=(bucket_size * bucket_size + 1, ) * 2,
-        dtype=relative_coords.dtype)
+        size=(bucket_size * bucket_size + 1,) * 2, dtype=relative_coords.dtype
+    )
     # (h*w, h*w)
     relative_position_index[1:, 1:] = relative_coords.sum(-1)
     relative_position_index[0, 0:] = num_relative_distance - 3
@@ -71,27 +80,26 @@ def make_image_bucket_position(bucket_size, num_relative_distance):
     return relative_position_index
 
 
-def _make_causal_mask(input_ids_shape: torch.Size,
-                      dtype: torch.dtype,
-                      past_key_values_length: int = 0):
+def _make_causal_mask(
+    input_ids_shape: torch.Size, dtype: torch.dtype, past_key_values_length: int = 0
+):
     """Make causal mask used for uni-directional self-attention."""
     bsz, tgt_len = input_ids_shape
-    mask = torch.full((tgt_len, tgt_len), float('-inf'))
+    mask = torch.full((tgt_len, tgt_len), float("-inf"))
     mask_cond = torch.arange(mask.size(-1))
     mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
     mask = mask.to(dtype)
 
     if past_key_values_length > 0:
         mask = torch.cat(
-            [torch.zeros(tgt_len, past_key_values_length, dtype=dtype), mask],
-            dim=-1)
-    return mask[None, None, :, :].expand(bsz, 1, tgt_len,
-                                         tgt_len + past_key_values_length)
+            [torch.zeros(tgt_len, past_key_values_length, dtype=dtype), mask], dim=-1
+        )
+    return mask[None, None, :, :].expand(
+        bsz, 1, tgt_len, tgt_len + past_key_values_length
+    )
 
 
-def _expand_mask(mask: torch.Tensor,
-                 dtype: torch.dtype,
-                 tgt_len: Optional[int] = None):
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
     """Expands attention_mask from ``[B, L_s]`` to ``[B, 1, L_t, L_s]``.
 
     Where ``B`` is batch_size, `L_s`` is the source sequence length, and
@@ -100,10 +108,8 @@ def _expand_mask(mask: torch.Tensor,
     bsz, src_len = mask.size()
     tgt_len = tgt_len if tgt_len is not None else src_len
 
-    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len,
-                                                  src_len).to(dtype)
-    return expanded_mask.masked_fill(expanded_mask.bool(),
-                                     torch.finfo(dtype).min)
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+    return expanded_mask.masked_fill(expanded_mask.bool(), torch.finfo(dtype).min)
 
 
 class MultiheadAttention(BaseModule):
@@ -128,17 +134,19 @@ class MultiheadAttention(BaseModule):
             Defaults to None.
     """
 
-    def __init__(self,
-                 embedding_dim,
-                 num_heads,
-                 kdim=None,
-                 vdim=None,
-                 attn_drop=0.,
-                 scale_factor=1.,
-                 qkv_bias=True,
-                 proj_bias=True,
-                 scale_heads=False,
-                 init_cfg=None):
+    def __init__(
+        self,
+        embedding_dim,
+        num_heads,
+        kdim=None,
+        vdim=None,
+        attn_drop=0.0,
+        scale_factor=1.0,
+        qkv_bias=True,
+        proj_bias=True,
+        scale_heads=False,
+        init_cfg=None,
+    ):
         super(MultiheadAttention, self).__init__(init_cfg=init_cfg)
 
         self.embedding_dim = embedding_dim
@@ -147,7 +155,7 @@ class MultiheadAttention(BaseModule):
         self.vdim = vdim or embedding_dim
 
         self.head_dim = embedding_dim // num_heads
-        self.scale = (self.head_dim * scale_factor)**-0.5
+        self.scale = (self.head_dim * scale_factor) ** -0.5
 
         self.q_proj = nn.Linear(embedding_dim, embedding_dim, bias=qkv_bias)
         self.k_proj = nn.Linear(self.kdim, embedding_dim, bias=qkv_bias)
@@ -178,17 +186,26 @@ class MultiheadAttention(BaseModule):
             key_value = query
 
         # (B, L, C) -> (B, num_heads, L, head_dims)
-        q = self.q_proj(query).reshape(B, -1, self.num_heads,
-                                       self.head_dim).transpose(1, 2)
+        q = (
+            self.q_proj(query)
+            .reshape(B, -1, self.num_heads, self.head_dim)
+            .transpose(1, 2)
+        )
 
         if is_cross_attention and past_key_value is not None:
             # Reuse key and value in cross_attentions
             k, v = past_key_value
         else:
-            k = self.k_proj(key_value).reshape(B, -1, self.num_heads,
-                                               self.head_dim).transpose(1, 2)
-            v = self.v_proj(key_value).reshape(B, -1, self.num_heads,
-                                               self.head_dim).transpose(1, 2)
+            k = (
+                self.k_proj(key_value)
+                .reshape(B, -1, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            v = (
+                self.v_proj(key_value)
+                .reshape(B, -1, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
             if past_key_value is not None:
                 past_key, past_value = past_key_value
                 k = torch.cat([past_key, k], dim=2)
@@ -208,7 +225,7 @@ class MultiheadAttention(BaseModule):
         attn = self.attn_drop(attn_weights) @ v
 
         if self.c_attn is not None:
-            attn = torch.einsum('bhlc,h->bhlc', attn, self.c_attn)
+            attn = torch.einsum("bhlc,h->bhlc", attn, self.c_attn)
 
         # (B, num_heads, L, head_dims) -> (B, L, C)
         attn = attn.transpose(1, 2).reshape(B, -1, self.embedding_dim)
@@ -226,6 +243,7 @@ class OFAResNet(ResNet):
 
     The ResNet in OFA has only three stages.
     """
+
     arch_settings = {
         50: (Bottleneck, (3, 4, 6)),
         101: (Bottleneck, (3, 4, 23)),
@@ -237,10 +255,11 @@ class OFAResNet(ResNet):
             depth=depth,
             *args,
             num_stages=3,
-            out_indices=(2, ),
+            out_indices=(2,),
             dilations=(1, 1, 1),
             strides=(1, 2, 2),
-            **kwargs)
+            **kwargs,
+        )
 
 
 @dataclass
@@ -270,19 +289,21 @@ class OFAEncoderOutput(ModelOutput):
 class OFAEncoderLayer(nn.Module):
     """OFAEncoder layer block."""
 
-    def __init__(self,
-                 embedding_dim,
-                 num_heads,
-                 dropout_rate=0.,
-                 drop_path_rate=0.,
-                 attn_drop=0.,
-                 act_drop=0.,
-                 scale_factor=2.,
-                 mlp_ratio=4.,
-                 scale_heads=True,
-                 normformer=True,
-                 pre_norm=True,
-                 act_cfg=dict(type='GELU')):
+    def __init__(
+        self,
+        embedding_dim,
+        num_heads,
+        dropout_rate=0.0,
+        drop_path_rate=0.0,
+        attn_drop=0.0,
+        act_drop=0.0,
+        scale_factor=2.0,
+        mlp_ratio=4.0,
+        scale_heads=True,
+        normformer=True,
+        pre_norm=True,
+        act_cfg=dict(type="GELU"),
+    ):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.pre_norm = pre_norm
@@ -299,8 +320,7 @@ class OFAEncoderLayer(nn.Module):
         self.fc1 = nn.Linear(embedding_dim, mid_channels)
         self.fc2 = nn.Linear(mid_channels, embedding_dim)
         self.act = MODELS.build(act_cfg)
-        self.act_drop = nn.Dropout(
-            act_drop) if act_drop > 0. else nn.Identity()
+        self.act_drop = nn.Dropout(act_drop) if act_drop > 0.0 else nn.Identity()
 
         # LayerNorm between attention block and ffn block.
         self.attn_ln = nn.LayerNorm(embedding_dim)
@@ -313,14 +333,11 @@ class OFAEncoderLayer(nn.Module):
             self.ffn_mid_ln = nn.LayerNorm(mid_channels)
 
         self.dropout = nn.Dropout(dropout_rate)
-        self.drop_path = DropPath(
-            drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+        self.drop_path = (
+            DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+        )
 
-    def forward(self,
-                x,
-                attention_mask=None,
-                attn_bias=None,
-                output_attentions=False):
+    def forward(self, x, attention_mask=None, attn_bias=None, output_attentions=False):
         """Forward the encoder layer.
 
         Args:
@@ -347,7 +364,8 @@ class OFAEncoderLayer(nn.Module):
             query=x,
             attn_mask=attention_mask,
             attn_bias=attn_bias,
-            output_attentions=output_attentions)
+            output_attentions=output_attentions,
+        )
         if self.normformer:
             x = self.attn_mid_ln(x)
         x = self.dropout(x)
@@ -379,20 +397,22 @@ class OFAEncoderLayer(nn.Module):
 class OFADecoderLayer(nn.Module):
     """OFADecoder layer block."""
 
-    def __init__(self,
-                 embedding_dim,
-                 num_heads,
-                 dropout_rate=0.,
-                 drop_path_rate=0.,
-                 attn_drop=0.,
-                 act_drop=0.,
-                 scale_factor=2.,
-                 mlp_ratio=4.,
-                 encoder_embed_dim=None,
-                 scale_heads=True,
-                 normformer=True,
-                 pre_norm=True,
-                 act_cfg=dict(type='GELU')):
+    def __init__(
+        self,
+        embedding_dim,
+        num_heads,
+        dropout_rate=0.0,
+        drop_path_rate=0.0,
+        attn_drop=0.0,
+        act_drop=0.0,
+        scale_factor=2.0,
+        mlp_ratio=4.0,
+        encoder_embed_dim=None,
+        scale_heads=True,
+        normformer=True,
+        pre_norm=True,
+        act_cfg=dict(type="GELU"),
+    ):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.pre_norm = pre_norm
@@ -419,8 +439,7 @@ class OFADecoderLayer(nn.Module):
         self.fc1 = nn.Linear(embedding_dim, mid_channels)
         self.fc2 = nn.Linear(mid_channels, embedding_dim)
         self.act = MODELS.build(act_cfg)
-        self.act_drop = nn.Dropout(
-            act_drop) if act_drop > 0. else nn.Identity()
+        self.act_drop = nn.Dropout(act_drop) if act_drop > 0.0 else nn.Identity()
 
         # LayerNorm between attention block and ffn block.
         self.self_attn_ln = nn.LayerNorm(embedding_dim)
@@ -435,8 +454,9 @@ class OFADecoderLayer(nn.Module):
             self.ffn_mid_ln = nn.LayerNorm(mid_channels)
 
         self.dropout = nn.Dropout(dropout_rate)
-        self.drop_path = DropPath(
-            drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+        self.drop_path = (
+            DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
+        )
 
     def forward(
         self,
@@ -516,7 +536,8 @@ class OFADecoderLayer(nn.Module):
                 attn_mask=encoder_attention_mask,
                 past_key_value=cross_past_key_value,
                 output_attentions=output_attentions,
-                attn_bias=cross_attn_bias)
+                attn_bias=cross_attn_bias,
+            )
             if self.normformer:
                 x = self.cross_attn_mid_ln(x)
             x = self.dropout(x)
@@ -596,12 +617,12 @@ class OFAEncoder(BaseModule):
         embed_images: dict,
         num_layers=6,
         num_heads=12,
-        dropout_rate=0.,
-        drop_path_rate=0.,
+        dropout_rate=0.0,
+        drop_path_rate=0.0,
         max_source_positions=1024,
         token_bucket_size=256,
         image_bucket_size=42,
-        attn_scale_factor=2.,
+        attn_scale_factor=2.0,
         scale_embedding=False,
         add_embedding_ln=True,
         add_type_embed=True,
@@ -621,8 +642,7 @@ class OFAEncoder(BaseModule):
 
         # Build embedding process components
         self.embed_tokens = embed_tokens
-        self.embedding_scale = math.sqrt(
-            embedding_dim) if scale_embedding else 1.0
+        self.embedding_scale = math.sqrt(embedding_dim) if scale_embedding else 1.0
 
         if not isinstance(embed_images, nn.Module):
             self.embed_images = MODELS.build(embed_images)
@@ -648,36 +668,39 @@ class OFAEncoder(BaseModule):
         self.entangle_position_embedding = entangle_position_embedding
 
         # Build position embedding
-        self.embed_positions = nn.Embedding(self.max_source_positions + 2,
-                                            embedding_dim)
+        self.embed_positions = nn.Embedding(
+            self.max_source_positions + 2, embedding_dim
+        )
         self.pos_ln = nn.LayerNorm(embedding_dim)
-        self.embed_image_positions = nn.Embedding(image_bucket_size**2 + 1,
-                                                  embedding_dim)
+        self.embed_image_positions = nn.Embedding(
+            image_bucket_size**2 + 1, embedding_dim
+        )
         self.image_pos_ln = nn.LayerNorm(embedding_dim)
 
-        self.pos_scaling = float(embedding_dim / num_heads *
-                                 attn_scale_factor)**-0.5
+        self.pos_scaling = float(embedding_dim / num_heads * attn_scale_factor) ** -0.5
         self.pos_q_linear = nn.Linear(embedding_dim, embedding_dim)
         self.pos_k_linear = nn.Linear(embedding_dim, embedding_dim)
 
-        self.dropout = nn.Dropout(
-            dropout_rate) if dropout_rate > 0. else nn.Identity()
+        self.dropout = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
 
         # Register token relative position embedding table
         self.token_bucket_size = token_bucket_size
         token_num_rel_dis = 2 * token_bucket_size - 1
-        token_rp_bucket = make_token_bucket_position(token_bucket_size,
-                                                     self.max_source_positions)
-        self.register_buffer('token_rp_bucket', token_rp_bucket)
+        token_rp_bucket = make_token_bucket_position(
+            token_bucket_size, self.max_source_positions
+        )
+        self.register_buffer("token_rp_bucket", token_rp_bucket)
         self.token_rel_pos_table_list = nn.ModuleList()
 
         # Register image relative position embedding table
         self.image_bucket_size = image_bucket_size
-        image_num_rel_dis = (2 * image_bucket_size -
-                             1) * (2 * image_bucket_size - 1) + 3
-        image_rp_bucket = make_image_bucket_position(image_bucket_size,
-                                                     image_num_rel_dis)
-        self.register_buffer('image_rp_bucket', image_rp_bucket)
+        image_num_rel_dis = (2 * image_bucket_size - 1) * (
+            2 * image_bucket_size - 1
+        ) + 3
+        image_rp_bucket = make_image_bucket_position(
+            image_bucket_size, image_num_rel_dis
+        )
+        self.register_buffer("image_rp_bucket", image_rp_bucket)
         self.image_rel_pos_table_list = nn.ModuleList()
 
         # Build encoder layers
@@ -695,8 +718,8 @@ class OFAEncoder(BaseModule):
             self.layers.append(layer)
             token_pos_table = nn.Embedding(token_num_rel_dis, self.num_heads)
             image_pos_table = nn.Embedding(image_num_rel_dis, self.num_heads)
-            nn.init.constant_(token_pos_table.weight, 0.)
-            nn.init.constant_(image_pos_table.weight, 0.)
+            nn.init.constant_(token_pos_table.weight, 0.0)
+            nn.init.constant_(image_pos_table.weight, 0.0)
             self.token_rel_pos_table_list.append(token_pos_table)
             self.image_rel_pos_table_list.append(image_pos_table)
 
@@ -705,15 +728,17 @@ class OFAEncoder(BaseModule):
         else:
             self.final_ln = None
 
-    main_input_name = 'input_ids'
+    main_input_name = "input_ids"
 
-    def forward(self,
-                input_ids,
-                images,
-                images_mask,
-                output_attentions=False,
-                output_hidden_states=False,
-                sample_patch_num=None):
+    def forward(
+        self,
+        input_ids,
+        images,
+        images_mask,
+        output_attentions=False,
+        output_hidden_states=False,
+        sample_patch_num=None,
+    ):
         padding_mask = input_ids.eq(self.padding_idx)
         has_pads = padding_mask.any()
         token_embedding = self.embed_tokens(input_ids)
@@ -735,12 +760,16 @@ class OFAEncoder(BaseModule):
 
         # Embed the input images
         if images is not None:
-            (image_tokens, image_padding_mask, image_position_ids,
-             image_pos_embedding) = self.get_image_tokens(
-                 images,
-                 sample_patch_num,
-                 images_mask,
-             )
+            (
+                image_tokens,
+                image_padding_mask,
+                image_position_ids,
+                image_pos_embedding,
+            ) = self.get_image_tokens(
+                images,
+                sample_patch_num,
+                images_mask,
+            )
             image_embedding = self.image_proj(image_tokens)
 
             image_x = self.process_embedding(
@@ -753,8 +782,7 @@ class OFAEncoder(BaseModule):
 
             x = torch.cat([image_x, x], dim=1)
             padding_mask = torch.cat([image_padding_mask, padding_mask], dim=1)
-            pos_embedding = torch.cat([image_pos_embedding, pos_embedding],
-                                      dim=1)
+            pos_embedding = torch.cat([image_pos_embedding, pos_embedding], dim=1)
 
         # account for padding while computing the representation
         if has_pads:
@@ -762,10 +790,17 @@ class OFAEncoder(BaseModule):
 
         # Decoupled position embedding
         B, L = pos_embedding.shape[:2]
-        pos_q = self.pos_q_linear(pos_embedding).view(
-            B, L, self.num_heads, -1).transpose(1, 2) * self.pos_scaling
-        pos_k = self.pos_k_linear(pos_embedding).view(B, L, self.num_heads,
-                                                      -1).transpose(1, 2)
+        pos_q = (
+            self.pos_q_linear(pos_embedding)
+            .view(B, L, self.num_heads, -1)
+            .transpose(1, 2)
+            * self.pos_scaling
+        )
+        pos_k = (
+            self.pos_k_linear(pos_embedding)
+            .view(B, L, self.num_heads, -1)
+            .transpose(1, 2)
+        )
         abs_pos_bias = torch.matmul(pos_q, pos_k.transpose(2, 3))
 
         all_hidden_states = [] if output_hidden_states else None
@@ -784,8 +819,7 @@ class OFAEncoder(BaseModule):
             # Add decoupled position embedding for images
             if images is not None:
                 token_len = image_tokens.size(1)
-                rel_pos_bias = self.get_image_rel_pos_bias(
-                    image_position_ids, idx)
+                rel_pos_bias = self.get_image_rel_pos_bias(image_position_ids, idx)
                 self_attn_bias[:, :, :token_len, :token_len] += rel_pos_bias
 
             if has_pads:
@@ -797,7 +831,8 @@ class OFAEncoder(BaseModule):
                 x,
                 attention_mask=attention_mask,
                 attn_bias=self_attn_bias,
-                output_attentions=output_attentions)
+                output_attentions=output_attentions,
+            )
             x = out[0]
 
             if output_attentions:
@@ -831,13 +866,13 @@ class OFAEncoder(BaseModule):
         # (B, C, H, W) -> (B, C, H*W) -> (B, H*W, C)
         image_embedding = image_embedding.flatten(2).transpose(1, 2)
         if sample_patch_num is not None:
-            patch_orders = torch.stack([
-                torch.randperm(num_patches)[:sample_patch_num]
-                for _ in range(B)
-            ])
+            patch_orders = torch.stack(
+                [torch.randperm(num_patches)[:sample_patch_num] for _ in range(B)]
+            )
             num_patches = sample_patch_num
             image_embedding = image_embedding.gather(
-                dim=1, index=patch_orders.unsqueeze(2).expand(-1, -1, C))
+                dim=1, index=patch_orders.unsqueeze(2).expand(-1, -1, C)
+            )
             padding_mask = padding_mask.gather(1, patch_orders)
             position_idx = position_idx.gather(1, patch_orders)
 
@@ -845,11 +880,9 @@ class OFAEncoder(BaseModule):
         padding_mask[~images_mask] = True
         return image_embedding, padding_mask, position_idx, pos_embedding
 
-    def process_embedding(self,
-                          embedding,
-                          pos_embedding=None,
-                          type_tokens=None,
-                          embedding_ln=None):
+    def process_embedding(
+        self, embedding, pos_embedding=None, type_tokens=None, embedding_ln=None
+    ):
         if self.entangle_position_embedding and pos_embedding is not None:
             embedding += pos_embedding
         if self.embed_type is not None:
@@ -863,8 +896,7 @@ class OFAEncoder(BaseModule):
     def get_rel_pos_bias(self, x, idx):
         seq_len = x.size(1)
         rp_bucket = self.token_rp_bucket[:seq_len, :seq_len]
-        values = F.embedding(rp_bucket,
-                             self.token_rel_pos_table_list[idx].weight)
+        values = F.embedding(rp_bucket, self.token_rel_pos_table_list[idx].weight)
         values = values.unsqueeze(0).expand(x.size(0), -1, -1, -1)
         values = values.permute([0, 3, 1, 2])
         return values.contiguous()
@@ -873,14 +905,15 @@ class OFAEncoder(BaseModule):
         bsz, seq_len = image_position_ids.shape
         rp_bucket_size = self.image_rp_bucket.size(1)
 
-        rp_bucket = self.image_rp_bucket.unsqueeze(0).expand(
-            bsz, rp_bucket_size, rp_bucket_size).gather(
-                1, image_position_ids[:, :, None].expand(
-                    bsz, seq_len, rp_bucket_size)).gather(
-                        2, image_position_ids[:, None, :].expand(
-                            bsz, seq_len, seq_len))
-        values = F.embedding(rp_bucket,
-                             self.image_rel_pos_table_list[idx].weight)
+        rp_bucket = (
+            self.image_rp_bucket.unsqueeze(0)
+            .expand(bsz, rp_bucket_size, rp_bucket_size)
+            .gather(
+                1, image_position_ids[:, :, None].expand(bsz, seq_len, rp_bucket_size)
+            )
+            .gather(2, image_position_ids[:, None, :].expand(bsz, seq_len, seq_len))
+        )
+        values = F.embedding(rp_bucket, self.image_rel_pos_table_list[idx].weight)
         values = values.permute(0, 3, 1, 2)
         return values
 
@@ -930,14 +963,14 @@ class OFADecoder(BaseModule):
         embed_tokens,
         num_layers=6,
         num_heads=12,
-        dropout_rate=0.,
-        drop_layer_rate=0.,
-        drop_path_rate=0.,
+        dropout_rate=0.0,
+        drop_layer_rate=0.0,
+        drop_path_rate=0.0,
         max_target_positions=1024,
         code_image_size=128,
         token_bucket_size=256,
         image_bucket_size=42,
-        attn_scale_factor=2.,
+        attn_scale_factor=2.0,
         scale_embedding=False,
         add_embedding_ln=True,
         add_code_embedding_ln=True,
@@ -958,8 +991,7 @@ class OFADecoder(BaseModule):
 
         # Build embedding process components
         self.embed_tokens = embed_tokens
-        self.embedding_scale = math.sqrt(
-            embedding_dim) if scale_embedding else 1.0
+        self.embedding_scale = math.sqrt(embedding_dim) if scale_embedding else 1.0
 
         if add_embedding_ln:
             self.embedding_ln = nn.LayerNorm(embedding_dim)
@@ -972,15 +1004,16 @@ class OFADecoder(BaseModule):
             self.code_embedding_ln = None
 
         # Build position embedding
-        self.embed_positions = nn.Embedding(self.max_target_positions + 2,
-                                            embedding_dim)
+        self.embed_positions = nn.Embedding(
+            self.max_target_positions + 2, embedding_dim
+        )
         self.pos_ln = nn.LayerNorm(embedding_dim)
-        self.embed_image_positions = nn.Embedding(image_bucket_size**2 + 1,
-                                                  embedding_dim)
+        self.embed_image_positions = nn.Embedding(
+            image_bucket_size**2 + 1, embedding_dim
+        )
         self.image_pos_ln = nn.LayerNorm(embedding_dim)
 
-        self.pos_scaling = float(embedding_dim / num_heads *
-                                 attn_scale_factor)**-0.5
+        self.pos_scaling = float(embedding_dim / num_heads * attn_scale_factor) ** -0.5
         self.self_pos_q_linear = nn.Linear(embedding_dim, embedding_dim)
         self.self_pos_k_linear = nn.Linear(embedding_dim, embedding_dim)
         self.cross_pos_q_linear = nn.Linear(embedding_dim, embedding_dim)
@@ -988,39 +1021,38 @@ class OFADecoder(BaseModule):
 
         self.entangle_position_embedding = entangle_position_embedding
 
-        self.dropout = nn.Dropout(
-            dropout_rate) if dropout_rate > 0. else nn.Identity()
-        if drop_layer_rate > 0.:
+        self.dropout = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
+        if drop_layer_rate > 0.0:
             raise NotImplementedError
 
         # Register token relative position embedding table
         self.token_bucket_size = token_bucket_size
         token_num_rel_dis = 2 * token_bucket_size - 1
         token_rp_bucket = make_token_bucket_position(token_bucket_size)
-        self.register_buffer('token_rp_bucket', token_rp_bucket)
+        self.register_buffer("token_rp_bucket", token_rp_bucket)
         self.token_rel_pos_table_list = nn.ModuleList()
 
         # Register image relative position embedding table
         self.image_bucket_size = image_bucket_size
-        image_num_rel_dis = (2 * image_bucket_size -
-                             1) * (2 * image_bucket_size - 1) + 3
-        image_rp_bucket = make_image_bucket_position(image_bucket_size,
-                                                     image_num_rel_dis)
-        self.register_buffer('image_rp_bucket', image_rp_bucket)
+        image_num_rel_dis = (2 * image_bucket_size - 1) * (
+            2 * image_bucket_size - 1
+        ) + 3
+        image_rp_bucket = make_image_bucket_position(
+            image_bucket_size, image_num_rel_dis
+        )
+        self.register_buffer("image_rp_bucket", image_rp_bucket)
         self.image_rel_pos_table_list = nn.ModuleList()
 
         self.window_size = code_image_size // 8
 
         position_col = torch.arange(self.window_size).unsqueeze(0)
-        position_row = torch.arange(
-            self.window_size).unsqueeze(1) * self.image_bucket_size
-        image_position_idx = (position_col + position_row + 1)
-        image_position_idx = torch.cat(
-            [torch.tensor([0]), image_position_idx.view(-1)])
-        image_position_idx = torch.cat(
-            [image_position_idx,
-             torch.tensor([1024] * 768)])
-        self.register_buffer('image_position_idx', image_position_idx)
+        position_row = (
+            torch.arange(self.window_size).unsqueeze(1) * self.image_bucket_size
+        )
+        image_position_idx = position_col + position_row + 1
+        image_position_idx = torch.cat([torch.tensor([0]), image_position_idx.view(-1)])
+        image_position_idx = torch.cat([image_position_idx, torch.tensor([1024] * 768)])
+        self.register_buffer("image_position_idx", image_position_idx)
 
         # Build decoder layers
         self.layers = nn.ModuleList()
@@ -1037,8 +1069,8 @@ class OFADecoder(BaseModule):
             self.layers.append(layer)
             token_pos_table = nn.Embedding(token_num_rel_dis, self.num_heads)
             image_pos_table = nn.Embedding(image_num_rel_dis, self.num_heads)
-            nn.init.constant_(token_pos_table.weight, 0.)
-            nn.init.constant_(image_pos_table.weight, 0.)
+            nn.init.constant_(token_pos_table.weight, 0.0)
+            nn.init.constant_(image_pos_table.weight, 0.0)
             self.token_rel_pos_table_list.append(token_pos_table)
             self.image_rel_pos_table_list.append(image_pos_table)
 
@@ -1057,15 +1089,14 @@ class OFADecoder(BaseModule):
             self.output_projection.weight = self.embed_tokens.weight
         else:
             vocab_size = self.embed_tokens.num_embeddings
-            self.output_projection = nn.Linear(
-                embedding_dim, vocab_size, bias=False)
+            self.output_projection = nn.Linear(embedding_dim, vocab_size, bias=False)
             nn.init.normal_(
                 self.output_projection.weight,
                 mean=0,
                 std=embedding_dim**-0.5,
             )
 
-    main_input_name = 'input_ids'
+    main_input_name = "input_ids"
 
     def forward(
         self,
@@ -1080,7 +1111,6 @@ class OFADecoder(BaseModule):
         output_attentions: bool = False,
         output_hidden_states: bool = False,
     ):
-
         if past_key_values is not None and len(past_key_values) > 0:
             B, _, L_past, _ = past_key_values[0][0].shape
             L = L_past + 1
@@ -1089,32 +1119,36 @@ class OFADecoder(BaseModule):
             L_past = 0
 
         # Embed the token position
-        target_pos_idx = torch.arange(
-            L, device=input_ids.device).expand([B, L]).contiguous()
+        target_pos_idx = (
+            torch.arange(L, device=input_ids.device).expand([B, L]).contiguous()
+        )
         pos_embedding = self.embed_positions(target_pos_idx)
 
         # Embed the code positions
         if code_masks is not None and torch.any(code_masks):
-            image_position_idx = self.image_position_idx[:input_ids.size(1)]
+            image_position_idx = self.image_position_idx[: input_ids.size(1)]
             image_position_idx = image_position_idx.unsqueeze(0).expand(B, L)
-            pos_embedding[code_masks] = self.embed_image_positions(
-                image_position_idx)[code_masks]
+            pos_embedding[code_masks] = self.embed_image_positions(image_position_idx)[
+                code_masks
+            ]
 
         # Self-attention position bias (B, num_heads, L_t, L_t)
         self_abs_pos_bias = self.get_pos_info(self.pos_ln(pos_embedding))
         if code_masks is not None and torch.any(code_masks):
             self_image_abs_pos_bias = self.get_pos_info(
-                self.image_pos_ln(pos_embedding))
+                self.image_pos_ln(pos_embedding)
+            )
             self_abs_pos_bias[code_masks] = self_image_abs_pos_bias[code_masks]
 
         # Cross-attention position bias (B, num_heads, L_t, L_s)
         cross_abs_pos_bias = self.get_pos_info(
-            self.pos_ln(pos_embedding), encoder_pos_embedding)
+            self.pos_ln(pos_embedding), encoder_pos_embedding
+        )
         if code_masks is not None and torch.any(code_masks):
             cross_image_abs_pos_bias = self.get_pos_info(
-                self.image_pos_ln(pos_embedding), encoder_pos_embedding)
-            cross_abs_pos_bias[code_masks] = cross_image_abs_pos_bias[
-                code_masks]
+                self.image_pos_ln(pos_embedding), encoder_pos_embedding
+            )
+            cross_abs_pos_bias[code_masks] = cross_image_abs_pos_bias[code_masks]
 
         all_prev_output_tokens = input_ids.clone()
         if past_key_values is not None and len(past_key_values) > 0:
@@ -1129,8 +1163,11 @@ class OFADecoder(BaseModule):
             x += pos_embedding
 
         if self.embedding_ln is not None:
-            if (code_masks is None or not code_masks.any()
-                    or self.code_embedding_ln is None):
+            if (
+                code_masks is None
+                or not code_masks.any()
+                or self.code_embedding_ln is None
+            ):
                 x = self.embedding_ln(x)
             elif code_masks is not None and code_masks.all():
                 x = self.code_embedding_ln(x)
@@ -1141,14 +1178,16 @@ class OFADecoder(BaseModule):
         x = self.dropout(x)
 
         attention_mask = self._prepare_decoder_attention_mask(
-            attention_mask, input_ids.shape, x.dtype, L_past)
+            attention_mask, input_ids.shape, x.dtype, L_past
+        )
         attention_mask = attention_mask.to(x.device)
 
         # decoder layers
         all_hidden_states = [] if output_hidden_states else None
         all_self_attns = [] if output_attentions else None
-        all_cross_attentions = [] if (
-            output_attentions and encoder_hidden_states is not None) else None
+        all_cross_attentions = (
+            [] if (output_attentions and encoder_hidden_states is not None) else None
+        )
         next_decoder_cache = [] if use_cache else None
 
         for idx, layer in enumerate(self.layers):
@@ -1163,16 +1202,18 @@ class OFADecoder(BaseModule):
 
             self_attn_bias = self_abs_pos_bias.clone()
             if code_masks is None or not code_masks.any():
-                self_attn_bias += self.get_rel_pos_bias(
-                    all_prev_output_tokens, idx)
+                self_attn_bias += self.get_rel_pos_bias(all_prev_output_tokens, idx)
             elif code_masks is not None and code_masks.all():
                 self_attn_bias += self.get_image_rel_pos_bias(
-                    all_prev_output_tokens, idx)
+                    all_prev_output_tokens, idx
+                )
             else:
                 self_attn_bias[~code_masks] += self.get_rel_pos_bias(
-                    all_prev_output_tokens, idx)
+                    all_prev_output_tokens, idx
+                )
                 self_attn_bias[code_masks] += self.get_image_rel_pos_bias(
-                    all_prev_output_tokens, idx)
+                    all_prev_output_tokens, idx
+                )
 
             if past_key_value is not None:
                 self_attn_bias = self_attn_bias[:, :, -1:, :]
@@ -1200,7 +1241,7 @@ class OFADecoder(BaseModule):
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
-            all_hidden_states += (x, )
+            all_hidden_states += (x,)
 
         if self.final_ln is not None:
             x = self.final_ln(x)
@@ -1229,18 +1270,19 @@ class OFADecoder(BaseModule):
         combined_attention_mask = None
         if input_shape[-1] > 1:
             combined_attention_mask = _make_causal_mask(
-                input_shape,
-                dtype,
-                past_key_values_length=past_key_values_length).to(
-                    attention_mask.device)
+                input_shape, dtype, past_key_values_length=past_key_values_length
+            ).to(attention_mask.device)
 
         if attention_mask is not None:
             # (B, L_s) -> (B, 1, L_t, L_s)
             expanded_attention_mask = _expand_mask(
-                attention_mask, dtype, tgt_len=input_shape[-1])
+                attention_mask, dtype, tgt_len=input_shape[-1]
+            )
             combined_attention_mask = (
-                expanded_attention_mask if combined_attention_mask is None else
-                expanded_attention_mask + combined_attention_mask)
+                expanded_attention_mask
+                if combined_attention_mask is None
+                else expanded_attention_mask + combined_attention_mask
+            )
 
         return combined_attention_mask
 
@@ -1248,17 +1290,29 @@ class OFADecoder(BaseModule):
         B, tgt_len = pos_embedding.shape[:2]
         if src_pos_embedding is not None:
             src_len = src_pos_embedding.size(1)
-            pos_q = self.cross_pos_q_linear(pos_embedding).view(
-                B, tgt_len, self.num_heads, -1).transpose(1, 2)
+            pos_q = (
+                self.cross_pos_q_linear(pos_embedding)
+                .view(B, tgt_len, self.num_heads, -1)
+                .transpose(1, 2)
+            )
             pos_q = pos_q * self.pos_scaling
-            pos_k = self.cross_pos_k_linear(src_pos_embedding).view(
-                B, src_len, self.num_heads, -1).transpose(1, 2)
+            pos_k = (
+                self.cross_pos_k_linear(src_pos_embedding)
+                .view(B, src_len, self.num_heads, -1)
+                .transpose(1, 2)
+            )
         else:
-            pos_q = self.self_pos_q_linear(pos_embedding).view(
-                B, tgt_len, self.num_heads, -1).transpose(1, 2)
+            pos_q = (
+                self.self_pos_q_linear(pos_embedding)
+                .view(B, tgt_len, self.num_heads, -1)
+                .transpose(1, 2)
+            )
             pos_q = pos_q * self.pos_scaling
-            pos_k = self.self_pos_k_linear(pos_embedding).view(
-                B, tgt_len, self.num_heads, -1).transpose(1, 2)
+            pos_k = (
+                self.self_pos_k_linear(pos_embedding)
+                .view(B, tgt_len, self.num_heads, -1)
+                .transpose(1, 2)
+            )
 
         abs_pos_bias = torch.matmul(pos_q, pos_k.transpose(2, 3))
 
@@ -1267,8 +1321,7 @@ class OFADecoder(BaseModule):
     def get_rel_pos_bias(self, x, idx):
         seq_len = x.size(1)
         rp_bucket = self.token_rp_bucket[:seq_len, :seq_len]
-        values = F.embedding(rp_bucket,
-                             self.token_rel_pos_table_list[idx].weight)
+        values = F.embedding(rp_bucket, self.token_rel_pos_table_list[idx].weight)
         values = values.unsqueeze(0).expand(x.size(0), -1, -1, -1)
         values = values.permute([0, 3, 1, 2])
         return values.contiguous()
@@ -1277,14 +1330,15 @@ class OFADecoder(BaseModule):
         bsz, seq_len = image_position_ids.shape
         rp_bucket_size = self.image_rp_bucket.size(1)
 
-        rp_bucket = self.image_rp_bucket.unsqueeze(0).expand(
-            bsz, rp_bucket_size, rp_bucket_size).gather(
-                1, image_position_ids[:, :, None].expand(
-                    bsz, seq_len, rp_bucket_size)).gather(
-                        2, image_position_ids[:, None, :].expand(
-                            bsz, seq_len, seq_len))
-        values = F.embedding(rp_bucket,
-                             self.image_rel_pos_table_list[idx].weight)
+        rp_bucket = (
+            self.image_rp_bucket.unsqueeze(0)
+            .expand(bsz, rp_bucket_size, rp_bucket_size)
+            .gather(
+                1, image_position_ids[:, :, None].expand(bsz, seq_len, rp_bucket_size)
+            )
+            .gather(2, image_position_ids[:, None, :].expand(bsz, seq_len, seq_len))
+        )
+        values = F.embedding(rp_bucket, self.image_rel_pos_table_list[idx].weight)
         values = values.permute(0, 3, 1, 2)
         return values
 
@@ -1308,14 +1362,14 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
     """
 
     def __init__(
-            self,
-            encoder_cfg,
-            decoder_cfg,
-            padding_idx,
-            vocab_size,
-            embedding_dim,
-            generation_cfg=dict(),
-            init_cfg=None,
+        self,
+        encoder_cfg,
+        decoder_cfg,
+        padding_idx,
+        vocab_size,
+        embedding_dim,
+        generation_cfg=dict(),
+        init_cfg=None,
     ):
         super().__init__(init_cfg=init_cfg)
 
@@ -1341,8 +1395,7 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
         )
         self.config.update(generation_cfg)
 
-        self.generation_config = GenerationConfig.from_model_config(
-            self.config)
+        self.generation_config = GenerationConfig.from_model_config(self.config)
 
     @property
     def device(self):
@@ -1363,8 +1416,7 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
 
     def get_normalized_probs(self, net_output, log_probs: bool, sample=None):
         """Get normalized probabilities (or log probs) from a net's output."""
-        return self.get_normalized_probs_scriptable(net_output, log_probs,
-                                                    sample)
+        return self.get_normalized_probs_scriptable(net_output, log_probs, sample)
 
     def get_normalized_probs_scriptable(
         self,
@@ -1376,9 +1428,8 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
 
         ~BaseFairseqModel.
         """
-        if hasattr(self, 'decoder'):
-            return self.decoder.get_normalized_probs(net_output, log_probs,
-                                                     sample)
+        if hasattr(self, "decoder"):
+            return self.decoder.get_normalized_probs(net_output, log_probs, sample)
         elif torch.is_tensor(net_output):
             # syntactic sugar for simple models which don't have a decoder
             # (e.g., the classification tutorial)
@@ -1389,23 +1440,25 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
                 return F.softmax(logits, dim=-1)
         raise NotImplementedError
 
-    main_input_name = 'input_ids'
+    main_input_name = "input_ids"
 
-    def forward(self,
-                input_ids=None,
-                images=None,
-                images_mask=None,
-                sample_patch_num=None,
-                decoder_input_ids=None,
-                code_masks=None,
-                attention_mask=None,
-                encoder_outputs=None,
-                past_key_values=None,
-                use_cache=False,
-                output_attentions=False,
-                output_hidden_states=False,
-                constrain_fn=None,
-                return_dict=False):
+    def forward(
+        self,
+        input_ids=None,
+        images=None,
+        images_mask=None,
+        sample_patch_num=None,
+        decoder_input_ids=None,
+        code_masks=None,
+        attention_mask=None,
+        encoder_outputs=None,
+        past_key_values=None,
+        use_cache=False,
+        output_attentions=False,
+        output_hidden_states=False,
+        constrain_fn=None,
+        return_dict=False,
+    ):
         """Forword the module.
 
         Args:
@@ -1476,9 +1529,11 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
             attention_mask = decoder_input_ids.eq(self.padding_idx)
 
         encoder_hidden_states = encoder_outputs.last_hidden_state
-        encoder_attention_mask = _expand_mask(encoder_outputs.padding_mask,
-                                              encoder_hidden_states.dtype,
-                                              decoder_input_ids.shape[-1])
+        encoder_attention_mask = _expand_mask(
+            encoder_outputs.padding_mask,
+            encoder_hidden_states.dtype,
+            decoder_input_ids.shape[-1],
+        )
         src_pos_embed = encoder_outputs.position_embedding
 
         decoder_outputs = self.decoder(
@@ -1498,8 +1553,7 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
         # before log_softmax, therefore we cannot use
         # `prefix_allowed_tokens_fn` to implement it.
         if constrain_fn is not None:
-            logits = constrain_fn(decoder_input_ids,
-                                  decoder_outputs.last_hidden_state)
+            logits = constrain_fn(decoder_input_ids, decoder_outputs.last_hidden_state)
         else:
             logits = decoder_outputs.last_hidden_state
 
@@ -1514,15 +1568,17 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
             encoder_attentions=encoder_outputs.attentions,
         )
 
-    def prepare_inputs_for_generation(self,
-                                      decoder_input_ids=None,
-                                      past=None,
-                                      attention_mask=None,
-                                      code_masks=None,
-                                      use_cache=False,
-                                      encoder_outputs=None,
-                                      constrain_fn=None,
-                                      **kwargs):
+    def prepare_inputs_for_generation(
+        self,
+        decoder_input_ids=None,
+        past=None,
+        attention_mask=None,
+        code_masks=None,
+        use_cache=False,
+        encoder_outputs=None,
+        constrain_fn=None,
+        **kwargs,
+    ):
         # if attention_mask is None:
         attention_mask = decoder_input_ids.new_zeros(decoder_input_ids.shape)
 
@@ -1531,31 +1587,35 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
             decoder_input_ids = decoder_input_ids[:, -1:]
 
         return {
-            'input_ids': None,
-            'images': None,
-            'images_mask': None,
-            'sample_patch_num': None,
-            'attention_mask': attention_mask,
-            'encoder_outputs': encoder_outputs,
-            'past_key_values': past,
-            'decoder_input_ids': decoder_input_ids,
-            'code_masks': code_masks,
-            'use_cache': use_cache,
-            'constrain_fn': constrain_fn,
+            "input_ids": None,
+            "images": None,
+            "images_mask": None,
+            "sample_patch_num": None,
+            "attention_mask": attention_mask,
+            "encoder_outputs": encoder_outputs,
+            "past_key_values": past,
+            "decoder_input_ids": decoder_input_ids,
+            "code_masks": code_masks,
+            "use_cache": use_cache,
+            "constrain_fn": constrain_fn,
         }
 
     def _prepare_encoder_decoder_kwargs_for_generation(
-            self,
-            inputs_tensor: torch.Tensor,
-            model_kwargs,
-            model_input_name: Optional[str] = None):
+        self,
+        inputs_tensor: torch.Tensor,
+        model_kwargs,
+        model_input_name: Optional[str] = None,
+    ):
         # 1. get encoder
         encoder = self.get_encoder()
 
         # 2. prepare encoder args and encoder kwargs from model kwargs
         irrelevant_prefix = [
-            'decoder_', 'cross_attn', 'use_cache', 'attention_mask',
-            'constrain_fn'
+            "decoder_",
+            "cross_attn",
+            "use_cache",
+            "attention_mask",
+            "constrain_fn",
         ]
         encoder_kwargs = {
             argument: value
@@ -1563,16 +1623,14 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
             if not any(argument.startswith(p) for p in irrelevant_prefix)
         }
 
-        if encoder_kwargs.get('images_mask') is None:
-            encoder_kwargs['images_mask'] = torch.tensor([True] *
-                                                         inputs_tensor.size(0))
+        if encoder_kwargs.get("images_mask") is None:
+            encoder_kwargs["images_mask"] = torch.tensor([True] * inputs_tensor.size(0))
 
         # 3. make sure that encoder returns `ModelOutput`
         model_input_name = model_input_name or self.main_input_name
         encoder_kwargs[model_input_name] = inputs_tensor
-        model_kwargs['encoder_outputs']: ModelOutput = encoder(
-            **encoder_kwargs)
-        model_kwargs['attention_mask'] = None
+        model_kwargs["encoder_outputs"]: ModelOutput = encoder(**encoder_kwargs)
+        model_kwargs["attention_mask"] = None
 
         return model_kwargs
 
@@ -1580,9 +1638,11 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
     def _reorder_cache(past, beam_idx):
         reordered_past = ()
         for layer_past in past:
-            reordered_past += (tuple(
-                past_state.index_select(0, beam_idx)
-                for past_state in layer_past), )
+            reordered_past += (
+                tuple(
+                    past_state.index_select(0, beam_idx) for past_state in layer_past
+                ),
+            )
         return reordered_past
 
     @staticmethod
@@ -1595,23 +1655,33 @@ class OFAEncoderDecoder(BaseModule, GenerationMixin):
         **model_kwargs,
     ):
         expanded_return_idx = (
-            torch.arange(input_ids.shape[0]).view(-1, 1).repeat(
-                1, expand_size).view(-1).to(input_ids.device))
+            torch.arange(input_ids.shape[0])
+            .view(-1, 1)
+            .repeat(1, expand_size)
+            .view(-1)
+            .to(input_ids.device)
+        )
         input_ids = input_ids.index_select(0, expanded_return_idx)
 
         if attention_mask is not None:
-            model_kwargs['attention_mask'] = attention_mask.index_select(
-                0, expanded_return_idx)
+            model_kwargs["attention_mask"] = attention_mask.index_select(
+                0, expanded_return_idx
+            )
 
         if is_encoder_decoder:
             if encoder_outputs is None:
-                raise ValueError('If `is_encoder_decoder` is True, make '
-                                 'sure that `encoder_outputs` is defined.')
-            encoder_outputs['last_hidden_state'] = encoder_outputs.\
-                last_hidden_state.index_select(0, expanded_return_idx)
-            encoder_outputs['position_embedding'] = encoder_outputs.\
-                position_embedding.index_select(0, expanded_return_idx)
-            encoder_outputs['padding_mask'] = encoder_outputs.\
-                padding_mask.index_select(0, expanded_return_idx)
-            model_kwargs['encoder_outputs'] = encoder_outputs
+                raise ValueError(
+                    "If `is_encoder_decoder` is True, make "
+                    "sure that `encoder_outputs` is defined."
+                )
+            encoder_outputs["last_hidden_state"] = (
+                encoder_outputs.last_hidden_state.index_select(0, expanded_return_idx)
+            )
+            encoder_outputs["position_embedding"] = (
+                encoder_outputs.position_embedding.index_select(0, expanded_return_idx)
+            )
+            encoder_outputs["padding_mask"] = encoder_outputs.padding_mask.index_select(
+                0, expanded_return_idx
+            )
+            model_kwargs["encoder_outputs"] = encoder_outputs
         return input_ids, model_kwargs
